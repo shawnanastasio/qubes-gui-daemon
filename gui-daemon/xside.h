@@ -58,9 +58,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <unistd.h>
-#include <libvchan.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/XShm.h>
+
+#include "txrx-provider.h"
 
 enum clipboard_op {
     CLIPBOARD_COPY,
@@ -143,7 +144,7 @@ struct _global_handles {
     uint32_t cmd_shmid;        /* shared memory id - received from shmoverride.so through shm.id.$DISPLAY file */
     int inter_appviewer_lock_fd; /* FD of lock file used to synchronize shared memory access */
     /* Client VM parameters */
-    libvchan_t *vchan;
+    struct txrx_provider *txrx;
     char vmname[32];    /* name of VM */
     int domid;        /* Xen domain id (GUI) */
     int target_domid;        /* Xen domain id (VM) - can differ from domid when GUI is stubdom */

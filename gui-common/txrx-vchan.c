@@ -26,17 +26,23 @@
 #include <sys/select.h>
 #include <errno.h>
 #include "double-buffer.h"
+#include "txrx-provider.h"
 
-void (*vchan_at_eof)(void) = NULL;
-int vchan_is_closed = 0;
+struct txrx_provider_vchan {
+    struct txrx_provider super;
+    libvchan_t *vchan;
+    void (*vchan_at_eof)(void);
+    int vchan_is_closed;
+    /* double buffered in gui-daemon to deal with deadlock
+     * during send large clipboard content
+     */
+    int double_buffered;
+};
 
-/* double buffered in gui-daemon to deal with deadlock
- * during send large clipboard content
- */
-int double_buffered = 1;
-
-void vchan_register_at_eof(void (*new_vchan_at_eof)(void)) {
-    vchan_at_eof = new_vchan_at_eof;
+static void vchan_register_at_eof(struct txrx_provider *_provider, void (*new_vchan_at_eof)(void))
+{
+    struct txrx_provider_vchan *provider = (struct txrx_provider_vchan *)_provider;
+    provider->vchan_at_eof = new_vchan_at_eof;
 }
 
 void handle_vchan_error(libvchan_t *vchan, const char *op)
@@ -50,65 +56,65 @@ void handle_vchan_error(libvchan_t *vchan, const char *op)
     }
 }
 
-int write_data_exact(libvchan_t *vchan, char *buf, int size)
+static int vchan_write_data_exact(struct txrx_provider *_provider, char *buf, int size)
 {
+    struct txrx_provider_vchan *provider = (struct txrx_provider_vchan *)_provider;
     int written = 0;
     int ret;
 
     while (written < size) {
-        ret = libvchan_write(vchan, buf + written, size - written);
+        ret = libvchan_write(provider->vchan, buf + written, size - written);
         if (ret <= 0)
-            handle_vchan_error(vchan, "write data");
+            handle_vchan_error(provider->vchan, "write data");
         written += ret;
     }
 //      fprintf(stderr, "sent %d bytes\n", size);
     return size;
 }
 
-int write_data(libvchan_t *vchan, char *buf, int size)
+static int vchan_write_data(struct txrx_provider *_provider, char *buf, int size)
 {
+    struct txrx_provider_vchan *provider = (struct txrx_provider_vchan *)_provider;
+
     int count;
-    if (!double_buffered)
-        return write_data_exact(vchan, buf, size); // this may block
+    if (!provider->double_buffered)
+        return vchan_write_data_exact(_provider, buf, size); // this may block
     double_buffer_append(buf, size);
-    count = libvchan_buffer_space(vchan);
+    count = libvchan_buffer_space(provider->vchan);
     if (count > double_buffer_datacount())
         count = double_buffer_datacount();
         // below, we write only as much data as possible without
         // blocking; remainder of data stays in the double buffer
-    write_data_exact(vchan, double_buffer_data(), count);
+    vchan_write_data_exact(_provider, double_buffer_data(), count);
     double_buffer_substract(count);
     return size;
 }
 
-int real_write_message(libvchan_t *vchan, char *hdr, int size, char *data, int datasize)
+static int vchan_read_data(struct txrx_provider *_provider, char *buf, int size)
 {
-    write_data(vchan, hdr, size);
-    write_data(vchan, data, datasize);
-    return 0;
-}
+    struct txrx_provider_vchan *provider = (struct txrx_provider_vchan *)_provider;
 
-int read_data(libvchan_t *vchan, char *buf, int size)
-{
     int written = 0;
     int ret;
     while (written < size) {
-        ret = libvchan_read(vchan, buf + written, size - written);
+        ret = libvchan_read(provider->vchan, buf + written, size - written);
         if (ret <= 0)
-            handle_vchan_error(vchan, "read data");
+            handle_vchan_error(provider->vchan, "read data");
         written += ret;
     }
 //      fprintf(stderr, "read %d bytes\n", size);
     return size;
 }
 
-int wait_for_vchan_or_argfd_once(libvchan_t *vchan, int nfd, int *fd, fd_set * retset)
+static int wait_for_vchan_or_argfd_once(struct txrx_provider *_provider, int nfd, int *fd, fd_set * retset)
 {
+    struct txrx_provider_vchan *provider = (struct txrx_provider_vchan *)_provider;
+
     fd_set rfds;
     int vfd, max = 0, ret, i;
     struct timeval tv = { 0, 1000000 };
-    write_data(vchan, NULL, 0);    // trigger write of queued data, if any present
-    vfd = libvchan_fd_for_select(vchan);
+    vchan_write_data(_provider, NULL, 0);    // trigger write of queued data, if any present
+    vfd = libvchan_fd_for_select(provider->vchan);
     FD_ZERO(&rfds);
     for (i = 0; i < nfd; i++) {
         int cfd = fd[i];
@@ -127,27 +133,61 @@ int wait_for_vchan_or_argfd_once(libvchan_t *vchan, int nfd, int *fd, fd_set * r
         perror("select");
         exit(1);
     }
-    if (!libvchan_is_open(vchan)) {
+    if (!libvchan_is_open(provider->vchan)) {
         fprintf(stderr, "libvchan_is_eof\n");
-        libvchan_close(vchan);
-        if (vchan_at_eof != NULL) {
-            vchan_at_eof();
+        libvchan_close(provider->vchan);
+        if (provider->vchan_at_eof != NULL) {
+            provider->vchan_at_eof();
             return -1;
         } else
             exit(0);
     }
     if (FD_ISSET(vfd, &rfds))
         // the following will never block; we need to do this to
-        // clear libvchan_fd pending state 
-        libvchan_wait(vchan);
+        // clear libvchan_fd pending state
+        libvchan_wait(provider->vchan);
     if (retset)
         *retset = rfds;
     return ret;
 }
 
-int wait_for_vchan_or_argfd(libvchan_t *vchan, int nfd, int *fd, fd_set * retset)
+static int vchan_data_ready(struct txrx_provider *_provider)
 {
-    int ret;
-    while ((ret=wait_for_vchan_or_argfd_once(vchan, nfd, fd, retset)) == 0);
-    return ret;
+    struct txrx_provider_vchan *provider = (struct txrx_provider_vchan *)_provider;
+    return libvchan_data_ready(provider->vchan);
+}
+
+static void vchan_destruct(struct txrx_provider *_provider)
+{
+    struct txrx_provider_vchan *provider = (struct txrx_provider_vchan *)_provider;
+    libvchan_close(provider->vchan);
+}
+
+struct txrx_provider *txrx_provider_vchan_new_client(int domain, int port)
+{
+    struct txrx_provider_vchan *provider = malloc(sizeof(struct txrx_provider_vchan));
+    if (!provider)
+        return NULL;
+
+    // Set default values
+    provider->vchan_is_closed = 0;
+    provider->double_buffered = 1;
+
+    // Create new libvchan_t *
+    provider->vchan = libvchan_client_init(domain, port);
+    if (!provider->vchan) {
+        free(provider);
+        return NULL;
+    }
+
+    // Set function pointers
+    provider->super.register_eof_callback = &vchan_register_at_eof;
+    provider->super.write_data = &vchan_write_data;
+    provider->super.write_data_exact = &vchan_write_data_exact;
+    provider->super.read_data = &vchan_read_data;
+    provider->super.wait_for_txrx_or_argfd_once = &wait_for_vchan_or_argfd_once;
+    provider->super.data_ready = &vchan_data_ready;
+    provider->super.destruct = &vchan_destruct;
+
+    return (struct txrx_provider *)provider;
 }

@@ -48,9 +48,9 @@
 #include <assert.h>
 #include <qubes-gui-protocol.h>
 #include <qubes-xorg-tray-defs.h>
-#include <libvchan.h>
 #include "xside.h"
 #include "txrx.h"
+#include "txrx-provider.h"
 #include "double-buffer.h"
 #include "list.h"
 #include "error.h"
@@ -684,7 +684,7 @@ static void handle_clipboard_data(Ghandles * g, unsigned int untrusted_len)
         perror("malloc");
         exit(1);
     }
-    read_data(g->vchan, untrusted_data, untrusted_data_sz);
+    read_data(g->txrx, untrusted_data, untrusted_data_sz);
     if (!g->clipboard_requested) {
         free(untrusted_data);
         fprintf(stderr,
@@ -790,7 +790,7 @@ static int is_special_keypress(Ghandles * g, const XKeyEvent * ev, XID remote_wi
             hdr.untrusted_len = 0;
             if (g->log_level > 0)
                 fprintf(stderr, "secure copy\n");
-            write_struct(g->vchan, hdr);
+            write_struct(g->txrx, hdr);
         }
         return 1;
     }
@@ -828,7 +828,7 @@ static int is_special_keypress(Ghandles * g, const XKeyEvent * ev, XID remote_wi
                    of the blob */
                 hdr.window = len;
                 hdr.untrusted_len = len;
-                real_write_message(g->vchan, (char *) &hdr, sizeof(hdr),
+                real_write_message(g->txrx, (char *) &hdr, sizeof(hdr),
                         data, len);
                 free(data);
             }
@@ -858,7 +858,7 @@ static void process_xevent_keypress(Ghandles * g, const XKeyEvent * ev)
     k.keycode = ev->keycode;
     hdr.type = MSG_KEYPRESS;
     hdr.window = vm_window->remote_winid;
-    write_message(g->vchan, hdr, k);
+    write_message(g->txrx, hdr, k);
 //      fprintf(stderr, "win 0x%x(0x%x) type=%d keycode=%d\n",
 //              (int) ev->window, hdr.window, k.type, k.keycode);
 }
@@ -900,7 +900,7 @@ static void process_xevent_button(Ghandles * g, const XButtonEvent * ev)
     k.button = ev->button;
     hdr.type = MSG_BUTTON;
     hdr.window = vm_window->remote_winid;
-    write_message(g->vchan, hdr, k);
+    write_message(g->txrx, hdr, k);
     if (g->log_level > 1)
         fprintf(stderr,
             "xside: win 0x%x(0x%x) type=%d button=%d x=%d, y=%d\n",
@@ -923,7 +923,7 @@ static void process_xevent_close(Ghandles * g, XID window)
     hdr.type = MSG_CLOSE;
     hdr.window = vm_window->remote_winid;
     hdr.untrusted_len = 0;
-    write_struct(g->vchan, hdr);
+    write_struct(g->txrx, hdr);
 }
 
 /* handle local Xserver event XReparentEvent
@@ -961,7 +961,7 @@ static void send_configure(Ghandles * g, struct windowdata *vm_window, int x, in
     msg.width = w;
     msg.x = x;
     msg.y = y;
-    write_message(g->vchan, hdr, msg);
+    write_message(g->txrx, hdr, msg);
 }
 
 /* fix position of docked tray icon;
@@ -1150,7 +1150,7 @@ static void handle_configure_from_vm(Ghandles * g, struct windowdata *vm_window)
     unsigned width, height, override_redirect;
     int conf_changed;
 
-    read_struct(g->vchan, untrusted_conf);
+    read_struct(g->txrx, untrusted_conf);
     if (g->log_level > 1)
         fprintf(stderr,
             "handle_configure_from_vm, local 0x%x remote 0x%x, %d/%d, was"
@@ -1235,7 +1235,7 @@ static void process_xevent_crossing(Ghandles * g, const XCrossingEvent * ev)
         XQueryKeymap(g->display, keys);
         hdr.type = MSG_KEYMAP_NOTIFY;
         hdr.window = 0;
-        write_message(g->vchan, hdr, keys);
+        write_message(g->txrx, hdr, keys);
     }
     /* move tray to correct position in VM */
     if (vm_window->is_docked &&
@@ -1253,7 +1253,7 @@ static void process_xevent_crossing(Ghandles * g, const XCrossingEvent * ev)
     k.mode = ev->mode;
     k.detail = ev->detail;
     k.focus = ev->focus;
-    write_message(g->vchan, hdr, k);
+    write_message(g->txrx, hdr, k);
 }
 
 /* handle local Xserver event: XMotionEvent
@@ -1270,7 +1270,7 @@ static void process_xevent_motion(Ghandles * g, const XMotionEvent * ev)
     k.is_hint = ev->is_hint;
     hdr.type = MSG_MOTION;
     hdr.window = vm_window->remote_winid;
-    write_message(g->vchan, hdr, k);
+    write_message(g->txrx, hdr, k);
 //      fprintf(stderr, "motion in 0x%x", ev->window);
 }
 
@@ -1296,7 +1296,7 @@ static void process_xevent_focus(Ghandles * g, const XFocusChangeEvent * ev)
         XQueryKeymap(g->display, keys);
         hdr.type = MSG_KEYMAP_NOTIFY;
         hdr.window = 0;
-        write_message(g->vchan, hdr, keys);
+        write_message(g->txrx, hdr, keys);
     }
     hdr.type = MSG_FOCUS;
     hdr.window = vm_window->remote_winid;
@@ -1306,7 +1306,7 @@ static void process_xevent_focus(Ghandles * g, const XFocusChangeEvent * ev)
      */
     k.mode = NotifyNormal;
     k.detail = ev->detail;
-    write_message(g->vchan, hdr, k);
+    write_message(g->txrx, hdr, k);
 }
 
 /* update given fragment of window image
@@ -1484,7 +1484,7 @@ static void process_xevent_mapnotify(Ghandles * g, const XMapEvent * ev)
         map_info.override_redirect = attr.override_redirect;
         hdr.type = MSG_MAP;
         hdr.window = vm_window->remote_winid;
-        write_message(g->vchan, hdr, map_info);
+        write_message(g->txrx, hdr, map_info);
         if (vm_window->is_docked
             && fix_docked_xy(g, vm_window,
                      "process_xevent_mapnotify"))
@@ -1578,7 +1578,7 @@ static void process_xevent_propertynotify(Ghandles *g, const XPropertyEvent * ev
         hdr.window = vm_window->remote_winid;
         msg.flags_set = flags & ~vm_window->flags_set;
         msg.flags_unset = ~flags & vm_window->flags_set;
-        write_message(g->vchan, hdr, msg);
+        write_message(g->txrx, hdr, msg);
         vm_window->flags_set = flags;
     }
 }
@@ -1611,13 +1611,13 @@ static void process_xevent_xembed(Ghandles * g, const XClientMessageEvent * ev)
         XQueryKeymap(g->display, keys);
         hdr.type = MSG_KEYMAP_NOTIFY;
         hdr.window = 0;
-        write_message(g->vchan, hdr, keys);
+        write_message(g->txrx, hdr, keys);
         hdr.type = MSG_FOCUS;
         hdr.window = vm_window->remote_winid;
         k.type = FocusIn;
         k.mode = NotifyNormal;
         k.detail = NotifyNonlinear;
-        write_message(g->vchan, hdr, k);
+        write_message(g->txrx, hdr, k);
     }
 
 }
@@ -1692,7 +1692,7 @@ static void handle_shmimage(Ghandles * g, struct windowdata *vm_window)
 {
     struct msg_shmimage untrusted_mx;
 
-    read_struct(g->vchan, untrusted_mx);
+    read_struct(g->txrx, untrusted_mx);
     if (!vm_window->is_mapped)
         return;
     if (g->log_level >= 2) {
@@ -1729,7 +1729,7 @@ static void handle_create(Ghandles * g, XID window)
        vm_window->local_winid = 0;
        vm_window->dest = vm_window->src = vm_window->pix = 0;
      */
-    read_struct(g->vchan, untrusted_crt);
+    read_struct(g->txrx, untrusted_crt);
     /* sanitize start */
     VERIFY((int) untrusted_crt.width >= 0
            && (int) untrusted_crt.height >= 0);
@@ -1918,7 +1918,7 @@ static void handle_wmname(Ghandles * g, struct windowdata *vm_window)
     char buf[sizeof(untrusted_msg.data) + sizeof(g->vmname) + 3];
     char *list[1] = { buf };
 
-    read_struct(g->vchan, untrusted_msg);
+    read_struct(g->txrx, untrusted_msg);
     /* sanitize start */
     untrusted_msg.data[sizeof(untrusted_msg.data) - 1] = 0;
     sanitize_string_from_vm((unsigned char *) (untrusted_msg.data),
@@ -1947,7 +1947,7 @@ static void handle_wmclass(Ghandles * g, struct windowdata *vm_window)
     char res_name[sizeof(untrusted_msg.res_name) + sizeof(g->vmname) + 3];
     XClassHint class_hint;
 
-    read_struct(g->vchan, untrusted_msg);
+    read_struct(g->txrx, untrusted_msg);
     if (vm_window->is_mapped) {
         /* ICCCM 4.1.2.5. allows changing WM_CLASS only in Withdrawn state */
         if (g->log_level > 0)
@@ -1982,7 +1982,7 @@ static void handle_wmhints(Ghandles * g, struct windowdata *vm_window)
 
     memset(&size_hints, 0, sizeof(size_hints));
 
-    read_struct(g->vchan, untrusted_msg);
+    read_struct(g->txrx, untrusted_msg);
 
     /* sanitize start */
     size_hints.flags = 0;
@@ -2058,7 +2058,7 @@ static void handle_wmflags(Ghandles * g, struct windowdata *vm_window)
     struct msg_window_flags untrusted_msg;
     struct msg_window_flags msg;
 
-    read_struct(g->vchan, untrusted_msg);
+    read_struct(g->txrx, untrusted_msg);
 
     /* sanitize start */
     VERIFY((untrusted_msg.flags_set & untrusted_msg.flags_unset) == 0);
@@ -2179,7 +2179,7 @@ static void handle_map(Ghandles * g, struct windowdata *vm_window)
     struct msg_map_info untrusted_txt;
     XSetWindowAttributes attr;
 
-    read_struct(g->vchan, untrusted_txt);
+    read_struct(g->txrx, untrusted_txt);
     if (g->invisible)
         return;
     vm_window->is_mapped = 1;
@@ -2289,7 +2289,7 @@ static void handle_mfndump(Ghandles * g, struct windowdata *vm_window)
 
     if (vm_window->image)
         release_mapped_mfns(g, vm_window);
-    read_data(g->vchan, untrusted_shmcmd_data_from_remote,
+    read_data(g->txrx, untrusted_shmcmd_data_from_remote,
           sizeof(struct shm_cmd));
 
     if (g->log_level > 1)
@@ -2310,7 +2310,7 @@ static void handle_mfndump(Ghandles * g, struct windowdata *vm_window)
     /* sanitize end */
     vm_window->image_width = untrusted_shmcmd->width;
     vm_window->image_height = untrusted_shmcmd->height;    /* sanitized above */
-    read_data(g->vchan, (char *) untrusted_shmcmd->mfns,
+    read_data(g->txrx, (char *) untrusted_shmcmd->mfns,
           SIZEOF_SHARED_MFN * num_mfn);
     if (g->invisible)
         return;
@@ -2376,7 +2376,7 @@ static void handle_message(Ghandles * g)
     struct genlist *l;
     struct windowdata *vm_window = NULL;
 
-    read_struct(g->vchan, untrusted_hdr);
+    read_struct(g->txrx, untrusted_hdr);
     VERIFY(untrusted_hdr.type > MSG_MIN
            && untrusted_hdr.type < MSG_MAX);
     /* sanitized msg type */
@@ -2572,7 +2572,7 @@ static void send_xconf(Ghandles * g)
     xconf.h = attr.height;
     xconf.depth = attr.depth;
     xconf.mem = xconf.w * xconf.h * 4 / 1024 + 1;
-    write_struct(g->vchan, xconf);
+    write_struct(g->txrx, xconf);
 }
 
 /* receive from VM and compare protocol version
@@ -2582,7 +2582,7 @@ static void get_protocol_version(Ghandles * g)
     uint32_t untrusted_version;
     char message[1024];
     uint32_t version_major, version_minor;
-    read_struct(g->vchan, untrusted_version);
+    read_struct(g->txrx, untrusted_version);
     version_major = untrusted_version >> 16;
     version_minor = untrusted_version & 0xffff;
 
@@ -2731,7 +2731,7 @@ static void parse_cmdline_vmname(Ghandles * g, int argc, char **argv)
     int opt;
     optind = 1;
     g->vmname[0] = '\0';
-    
+
     while ((opt = getopt_long(argc, argv, optstring, longopts, NULL)) != -1) {
         if (opt == 'N') {
             strncpy(g->vmname, optarg, sizeof(g->vmname));
@@ -3161,9 +3161,9 @@ static void wait_for_pacat(int UNUSED(signum)) {
     }
 }
 
-void vchan_close()
+void txrx_close()
 {
-    libvchan_close(ghandles.vchan);
+    txrx_destruct(ghandles.txrx);
 }
 
 static void get_boot_lock(int domid)
@@ -3331,12 +3331,12 @@ int main(int argc, char **argv)
     mkghandles(&ghandles);
     XSetErrorHandler(x11_error_handler);
     double_buffer_init();
-    ghandles.vchan = libvchan_client_init(ghandles.domid, 6000);
-    if (!ghandles.vchan) {
+    ghandles.txrx = txrx_provider_vchan_new_client(ghandles.domid, 6000);
+    if (!ghandles.txrx) {
         fprintf(stderr, "Failed to connect to gui-agent\n");
         exit(1);
     }
-    atexit(vchan_close);
+    atexit(txrx_close);
     signal(SIGCHLD, wait_for_pacat);
     exec_pacat(&ghandles);
     atexit(kill_pacat);
@@ -3382,7 +3382,7 @@ int main(int argc, char **argv)
          * keyboard layout fails */
         system(cmd_tmp);
     }
-    vchan_register_at_eof(restart_guid);
+    register_eof_callback(ghandles.txrx, restart_guid);
 
     get_protocol_version(&ghandles);
     send_xconf(&ghandles);
@@ -3402,12 +3402,12 @@ int main(int argc, char **argv)
                 process_xevent(&ghandles);
                 busy = 1;
             }
-            if (libvchan_data_ready(ghandles.vchan)) {
+            if (txrx_data_ready(ghandles.txrx)) {
                 handle_message(&ghandles);
                 busy = 1;
             }
         } while (busy);
-        wait_for_vchan_or_argfd(ghandles.vchan, 1, select_fds, &retset);
+        wait_for_txrx_or_argfd(ghandles.txrx, 1, select_fds, &retset);
     }
     return 0;
 }

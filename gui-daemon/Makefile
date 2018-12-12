@@ -20,22 +20,20 @@
 #
 
 CC=gcc
-CFLAGS+=-I../include/ -g -O2 -Wall -Wextra -Werror -pie -fPIC \
+CFLAGS+=-I../include/ -g -O2 -Wall -Wextra -pie -fPIC \
 		`pkg-config --cflags libconfig` \
 		`pkg-config --cflags libnotify` \
-		`pkg-config --cflags libpng` \
-		`pkg-config --cflags vchan-$(BACKEND_VMM)`
+		`pkg-config --cflags libpng`
 OBJS=xside.o png.o trayicon.o ../gui-common/double-buffer.o ../gui-common/txrx-vchan.o \
-	../gui-common/error.o ../common/list.o
+	../gui-common/error.o ../common/list.o ../gui-common/txrx-provider.o
 
 all: qubes-guid qubes-guid.1
 qubes-guid: $(OBJS)
 	$(CC) -g -pie -o qubes-guid $(OBJS) \
-		-lX11 -lXext -Wall -lm \
-		`pkg-config --libs vchan-$(BACKEND_VMM)` \
+		-lX11 -lXext -Wall -lm -lvchan-xen \
 		`pkg-config --libs libpng` \
 		`pkg-config --libs libconfig` \
-		`pkg-config --libs libnotify`
+		`pkg-config --libs libnotify` 
 
 qubes-guid.1: qubes-guid
 	help2man --version-string=`cat ../version` --no-info --name="Qubes GUI daemon" ./qubes-guid  > qubes-guid.1
